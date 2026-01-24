@@ -61,8 +61,8 @@ void ReplayExtractor::SetReplayMode(bool enabled, const std::string& replayPath)
 void ReplayExtractor::ProcessReplayFrame(int frame, const GameState& state) {
     if (!replayMode) return;
     
-    // Sample every 30 frames (1 second) to avoid too much data
-    if (frame % 30 != 0) return;
+    // Sample every 900 frames (30 seconds) to avoid too much data
+    if (frame % 900 != 0) return;
     
     TrainingData sample;
     sample.state = state;

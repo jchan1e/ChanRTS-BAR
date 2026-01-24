@@ -15,6 +15,11 @@
 #include <queue>
 #include <unordered_map>
 
+// LibTorch integration
+#include "LibTorchModel.h"
+#include "SpatialInputManager.h"
+#include "HierarchicalBuildSystem.h"
+
 namespace chanrts {
 
 // Forward declarations
@@ -212,6 +217,10 @@ private:
     std::mutex trainingMutex;
     bool collectTrainingData;
     float finalGameReward;
+    std::string dataOutputDir;
+    bool replayMode;
+    int gameId;
+    float playerSkill;
     
     // Unit tracking
     std::unordered_map<int, int> unitToLastCommand;
@@ -221,6 +230,12 @@ private:
     int lastInferenceFrame;
     int inferenceCount;
     double totalInferenceTime;
+    
+    // ML Model Integration
+    std::unique_ptr<HierarchicalRTSModel> mlModel;
+    std::unique_ptr<SpatialInputManager> spatialInputManager;
+    ModelConfig modelConfig;
+    bool useMLInference;
 
 public:
     CChanRTS(springai::OOAICallback* callback);
@@ -250,6 +265,12 @@ private:
     void InferenceThreadLoop();
     void RunMLInference(const GameState& state, MLAction& action);
     
+    // ML model management
+    bool LoadMLModel();
+    void InitializeSpatialInputManager();
+    SpatialTensor GameStateToSpatialTensor(const GameState& state);
+    MLAction MLOutputToMLAction(const MLOutput& output, int frame);
+    
     // Action execution
     void ExecuteActions(const MLAction& actions);
     void ExecuteUnitAction(const UnitAction& action);
@@ -260,12 +281,22 @@ private:
     void SaveTrainingData();
     void CalculateFinalRewards();
     
+    // Data collection modes
+    void EnableDataCollection(const std::string& outputDir, bool replayMode = false);
+    void DisableDataCollection();
+    void SaveTrainingDataBinary();
+    void ProcessReplay(const std::string& replayPath, const std::string& outputDir);
+    
     // Utility methods
     float NormalizeCoordinate(float coord, float mapSize);
     float CalculateGameProgress();
     int GetUnitDefCategory(int unitDefId);
     bool IsUnitMilitary(int unitDefId);
     bool IsUnitEconomic(int unitDefId);
+    
+    // Configuration loading
+    void CheckDataCollectionConfig();
+    void LoadConfigFromFile(const std::string& configPath);
     
 }; // class CChanRTS
 

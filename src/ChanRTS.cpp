@@ -33,7 +33,11 @@ CChanRTS::CChanRTS(springai::OOAICallback* callback):
     finalGameReward(0.0f),
     lastInferenceFrame(0),
     inferenceCount(0),
-    totalInferenceTime(0.0)
+    totalInferenceTime(0.0),
+    useMLInference(false),
+    replayMode(false),
+    gameId(0),
+    playerSkill(20.0f)
 {
     // Initialize the inference thread
     StartInferenceThread();
@@ -42,11 +46,65 @@ CChanRTS::CChanRTS(springai::OOAICallback* callback):
     currentState.currentFrame = 0;
     currentActions.frame = 0;
     
-    // Send initialization message
+    // Initialize ML model and spatial input manager
+    LoadMLModel();
+    InitializeSpatialInputManager();
+    
+    // Check for training data collection configuration
+    CheckDataCollectionConfig();
+    
+    // Send initialization message and debug info
     if (callback) {
         const std::unique_ptr<springai::Game> game(callback->GetGame());
         if (game) {
             game->SendTextMessage("/say ChanRTS ML AI initialized with threaded inference!", 0);
+            
+            // Debug environment variables
+            game->SendTextMessage("/say === ENVIRONMENT DEBUG ===", 0);
+            
+            const char* collectEnv = std::getenv("CHANRTS_COLLECT_DATA");
+            const char* outputDirEnv = std::getenv("CHANRTS_OUTPUT_DIR");
+            const char* replayModeEnv = std::getenv("CHANRTS_REPLAY_MODE");
+            const char* configPathEnv = std::getenv("CHANRTS_CONFIG_PATH");
+            const char* playerSkillEnv = std::getenv("CHANRTS_PLAYER_SKILL");
+            const char* gameIdEnv = std::getenv("CHANRTS_GAME_ID");
+            
+            std::string envMsg = "/say CHANRTS_COLLECT_DATA=" + std::string(collectEnv ? collectEnv : "NULL");
+            game->SendTextMessage(envMsg.c_str(), 0);
+            
+            envMsg = "/say CHANRTS_OUTPUT_DIR=" + std::string(outputDirEnv ? outputDirEnv : "NULL");
+            game->SendTextMessage(envMsg.c_str(), 0);
+            
+            envMsg = "/say CHANRTS_REPLAY_MODE=" + std::string(replayModeEnv ? replayModeEnv : "NULL");
+            game->SendTextMessage(envMsg.c_str(), 0);
+            
+            envMsg = "/say CHANRTS_CONFIG_PATH=" + std::string(configPathEnv ? configPathEnv : "NULL");
+            game->SendTextMessage(envMsg.c_str(), 0);
+            
+            envMsg = "/say CHANRTS_PLAYER_SKILL=" + std::string(playerSkillEnv ? playerSkillEnv : "NULL");
+            game->SendTextMessage(envMsg.c_str(), 0);
+            
+            envMsg = "/say CHANRTS_GAME_ID=" + std::string(gameIdEnv ? gameIdEnv : "NULL");
+            game->SendTextMessage(envMsg.c_str(), 0);
+            
+            // Debug final configuration state
+            game->SendTextMessage("/say === CONFIG STATE ===", 0);
+            std::string debugMsg = "/say collectTrainingData: " + std::string(collectTrainingData ? "TRUE" : "FALSE");
+            game->SendTextMessage(debugMsg.c_str(), 0);
+            
+            std::string outputMsg = "/say dataOutputDir: " + (dataOutputDir.empty() ? "EMPTY" : dataOutputDir);
+            game->SendTextMessage(outputMsg.c_str(), 0);
+            
+            std::string replayMsg = "/say replayMode: " + std::string(replayMode ? "TRUE" : "FALSE");
+            game->SendTextMessage(replayMsg.c_str(), 0);
+            
+            std::string skillMsg = "/say playerSkill: " + std::to_string(playerSkill);
+            game->SendTextMessage(skillMsg.c_str(), 0);
+            
+            std::string gameIdMsg = "/say gameId: " + std::to_string(gameId);
+            game->SendTextMessage(gameIdMsg.c_str(), 0);
+            
+            game->SendTextMessage("/say === END DEBUG ===", 0);
         }
     }
 }
@@ -58,7 +116,13 @@ CChanRTS::~CChanRTS() {
     // Save training data before destruction
     if (collectTrainingData && !trainingBuffer.empty()) {
         CalculateFinalRewards();
-        SaveTrainingData();
+        
+        // Use binary format for replay processing, CSV for regular gameplay
+        if (replayMode) {
+            SaveTrainingDataBinary();
+        } else {
+            SaveTrainingData();
+        }
     }
 }
 
@@ -143,9 +207,35 @@ void CChanRTS::HandleUpdate(int frame) {
         ExecuteActions(currentActions);
     }
     
-    // Collect training data every 30 frames (1 second)
-    if (collectTrainingData && frame % 30 == 0) {
+    // Collect training data at different intervals depending on mode
+    int collectionInterval = replayMode ? 30 : 900; // Every 1 second in replay mode, every 30 seconds normally
+    if (collectTrainingData && frame % collectionInterval == 0) {
         CollectTrainingData(currentState, currentActions);
+        
+        // Send debug message about data collection (less frequent in replay mode to avoid spam)
+        if (callback && (!replayMode || frame % 900 == 0)) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string msg = "/say DATA COLLECTION: frame " + std::to_string(frame) + 
+                                " interval=" + std::to_string(collectionInterval) +
+                                " buffer=" + std::to_string(trainingBuffer.size()) + 
+                                " replayMode=" + std::string(replayMode ? "TRUE" : "FALSE");
+                game->SendTextMessage(msg.c_str(), 0);
+            }
+        }
+    }
+    
+    // Debug message for first few frames to show collection state
+    if (frame <= 90 && frame % 30 == 0) {
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string debugMsg = "/say Frame " + std::to_string(frame) + 
+                                     " collectTrainingData=" + std::string(collectTrainingData ? "TRUE" : "FALSE") +
+                                     " interval=" + std::to_string(collectionInterval);
+                game->SendTextMessage(debugMsg.c_str(), 0);
+            }
+        }
     }
 }
 
@@ -240,36 +330,74 @@ void CChanRTS::InferenceThreadLoop() {
 
 // ML inference placeholder - replace with actual model
 void CChanRTS::RunMLInference(const GameState& state, MLAction& action) {
-    // PLACEHOLDER: This is where you'll integrate your PyTorch/LibTorch model
-    // For now, implement simple rule-based behavior
-    
     action.unitActions.clear();
-    action.strategicState = 1; // Economic phase
+    action.strategicState = 1; // Default to economic phase
     action.frame = state.currentFrame;
     
-    // Simple rule: idle units should move randomly or build
-    for (const auto& unitInfo : state.allUnits) {
-        if (!unitInfo.isEnemy && unitInfo.isIdle) {
-            UnitAction unitAction;
-            unitAction.unitId = unitInfo.id;
-            
-            // Simple strategy: builders build, others move randomly
-            if (IsUnitEconomic(unitInfo.defId)) {
-                unitAction.type = UnitAction::BUILD;
-                // Find a build location (simplified)
-                unitAction.x = unitInfo.x + (rand() % 200 - 100);
-                unitAction.y = unitInfo.y + (rand() % 200 - 100);
-                unitAction.z = unitInfo.z;
-                unitAction.buildUnitDefId = 1; // Placeholder
-            } else {
+    // Early exit if ML inference is not available or enabled
+    if (!useMLInference || !mlModel || !spatialInputManager) {
+        // Fallback to simple rule-based behavior
+        printf("ChanRTS: Using rule-based fallback (ML not available)\n");
+        
+        // Simple rule: idle units should move randomly or build
+        for (const auto& unitInfo : state.allUnits) {
+            if (!unitInfo.isEnemy && unitInfo.isIdle) {
+                UnitAction unitAction;
+                unitAction.unitId = unitInfo.id;
+                
+                // Simple strategy: builders build, others move randomly
+                if (IsUnitEconomic(unitInfo.defId)) {
+                    unitAction.type = UnitAction::BUILD;
+                    // Find a build location (simplified)
+                    unitAction.x = unitInfo.x + (rand() % 200 - 100);
+                    unitAction.y = unitInfo.y + (rand() % 200 - 100);
+                    unitAction.z = unitInfo.z;
+                    unitAction.buildUnitDefId = 1; // Placeholder
+                } else {
+                    unitAction.type = UnitAction::MOVE;
+                    unitAction.x = rand() % state.mapWidth;
+                    unitAction.y = rand() % state.mapHeight;
+                    unitAction.z = 0;
+                }
+                
+                unitAction.priority = 50;
+                action.unitActions.push_back(unitAction);
+            }
+        }
+        return;
+    }
+    
+    try {
+        printf("ChanRTS: Running ML inference for frame %d\n", state.currentFrame);
+        
+        // Convert game state to spatial tensor
+        SpatialTensor inputTensor = GameStateToSpatialTensor(state);
+        printf("ChanRTS: Generated spatial tensor %dx%dx%d\n", inputTensor.width, inputTensor.height, inputTensor.channels);
+        
+        // Run inference through the neural network
+        MLOutput mlOutput = mlModel->Inference(inputTensor);
+        printf("ChanRTS: ML inference completed\n");
+        
+        // Convert ML output to game actions
+        action = MLOutputToMLAction(mlOutput, state.currentFrame);
+        printf("ChanRTS: Generated %d unit actions from ML output\n", (int)action.unitActions.size());
+        
+    } catch (const std::exception& e) {
+        printf("ChanRTS: ML inference failed with error: %s\n", e.what());
+        printf("ChanRTS: Falling back to rule-based behavior\n");
+        
+        // Fallback to rule-based behavior on ML failure
+        for (const auto& unitInfo : state.allUnits) {
+            if (!unitInfo.isEnemy && unitInfo.isIdle) {
+                UnitAction unitAction;
+                unitAction.unitId = unitInfo.id;
                 unitAction.type = UnitAction::MOVE;
                 unitAction.x = rand() % state.mapWidth;
                 unitAction.y = rand() % state.mapHeight;
                 unitAction.z = 0;
+                unitAction.priority = 50;
+                action.unitActions.push_back(unitAction);
             }
-            
-            unitAction.priority = 50;
-            action.unitActions.push_back(unitAction);
         }
     }
 }
@@ -664,7 +792,24 @@ void CChanRTS::CalculateFinalRewards() {
 
 // Save training data to file
 void CChanRTS::SaveTrainingData() {
-    if (trainingBuffer.empty()) return;
+    // Debug message
+    if (callback) {
+        const std::unique_ptr<springai::Game> game(callback->GetGame());
+        if (game) {
+            std::string msg = "/say Attempting to save " + std::to_string(trainingBuffer.size()) + " training samples";
+            game->SendTextMessage(msg.c_str(), 0);
+        }
+    }
+    
+    if (trainingBuffer.empty()) {
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                game->SendTextMessage("/say No training data to save (buffer empty)", 0);
+            }
+        }
+        return;
+    }
     
     std::lock_guard<std::mutex> lock(trainingMutex);
     
@@ -673,16 +818,58 @@ void CChanRTS::SaveTrainingData() {
         auto now = std::chrono::system_clock::now();
         auto time_t = std::chrono::system_clock::to_time_t(now);
         
-        std::string filename = "/data/chanrts/trainingdata/chanrts_training_data_" + std::to_string(time_t) + ".csv";
-        std::ofstream file(filename);
+        // Try multiple directories for saving training data
+        std::string filename;
+        std::ofstream file;
+        bool saved_successfully = false;
         
-        if (!file.is_open()) {
-            // Try alternative path
-            filename = "/tmp/" + filename;
+        // Try to save to the configured output directory first
+        if (!dataOutputDir.empty()) {
+            // Ensure the output directory exists
+            std::string output_dir = dataOutputDir;
+            if (output_dir.back() == '/') {
+                output_dir.pop_back(); // Remove trailing slash
+            }
+            
+            // Create directory if it doesn't exist
+            std::string mkdir_cmd = "mkdir -p \"" + output_dir + "\"";
+            system(mkdir_cmd.c_str());
+            
+            filename = output_dir + "/chanrts_training_data_" + std::to_string(time_t) + ".csv";
             file.open(filename);
+            if (file.is_open()) {
+                saved_successfully = true;
+            } else {
+                // Fallback to /tmp if configured directory fails
+                if (callback) {
+                    const std::unique_ptr<springai::Game> game(callback->GetGame());
+                    if (game) {
+                        std::string msg = "/say Failed to write to configured output dir, trying /tmp/";
+                        game->SendTextMessage(msg.c_str(), 0);
+                    }
+                }
+            }
         }
         
-        if (file.is_open()) {
+        // Try /tmp directory if not already successful and no output_dir configured
+        if (!saved_successfully) {
+            filename = "/tmp/chanrts_training_data_" + std::to_string(time_t) + ".csv";
+            file.open(filename);
+            if (file.is_open()) {
+                saved_successfully = true;
+            }
+        }
+        
+        // Try default directory if still not successful
+        if (!saved_successfully && dataOutputDir.empty()) {
+            filename = "./chanrts_training_data_" + std::to_string(time_t) + ".csv";
+            file.open(filename);
+            if (file.is_open()) {
+                saved_successfully = true;
+            }
+        }
+
+        if (saved_successfully) {
             // Write comprehensive CSV header
             file << "frame,game_progress,map_width,map_height,total_units,military_units,"
                  << "economic_units,metal,energy,metal_income,energy_income,"
@@ -779,6 +966,15 @@ void CChanRTS::SaveTrainingData() {
                     std::string msg = "/say Training data saved: " + filename + 
                                     " (" + std::to_string(trainingBuffer.size()) + " samples)";
                     game->SendTextMessage(msg.c_str(), 0);
+                }
+            }
+        } else {
+            // Failed to save anywhere
+            if (callback) {
+                const std::unique_ptr<springai::Game> game(callback->GetGame());
+                if (game) {
+                    std::string errorMsg = "/say ERROR: Failed to save training data to any directory!";
+                    game->SendTextMessage(errorMsg.c_str(), 0);
                 }
             }
         }
@@ -970,6 +1166,451 @@ GameState::UnitInfo CChanRTS::ExtractComprehensiveUnitInfo(springai::Unit* unit,
     }
     
     return unitInfo;
+}
+
+// Load ML model from the AI data directory
+bool CChanRTS::LoadMLModel() {
+    try {
+        // Model path is in the AI's data directory (gets installed with build_all_ais.sh)
+        // Use a simple fallback path for model loading  
+        std::string dataDir = ".";
+        if (dataDir.empty()) {
+            // Fallback to current directory
+            dataDir = ".";
+        }
+        
+        std::string modelPath = dataDir + "/chanrts_model.pth";
+        std::string configPath = dataDir + "/model_config.json";
+        
+        // Send debug message about model loading
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string msg = "/say Looking for model at: " + modelPath;
+                game->SendTextMessage(msg.c_str(), 0);
+            }
+        }
+        
+        // Check if model files exist
+        std::ifstream modelFile(modelPath);
+        std::ifstream configFile(configPath);
+        
+        if (!modelFile.good()) {
+            if (callback) {
+                const std::unique_ptr<springai::Game> game(callback->GetGame());
+                if (game) {
+                    game->SendTextMessage("/say Model file not found - using rule-based AI", 0);
+                }
+            }
+            useMLInference = false;
+            return false;
+        }
+        
+        // Load model configuration
+        if (configFile.good()) {
+            modelConfig = ModelConfig::FromFile(configPath);
+        } else {
+            // Use default configuration
+            modelConfig = ModelConfig();
+            if (callback) {
+                const std::unique_ptr<springai::Game> game(callback->GetGame());
+                if (game) {
+                    game->SendTextMessage("/say Using default model config", 0);
+                }
+            }
+        }
+        
+        // Create and load the model
+        mlModel = std::make_unique<HierarchicalRTSModel>(modelConfig);
+        mlModel->LoadFromFile(modelPath);
+        mlModel->SetDevice(modelConfig.device);
+        mlModel->SetEvalMode();
+        
+        useMLInference = true;
+        
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string msg = "/say ML model loaded successfully (" + modelConfig.backboneType + ")";
+                game->SendTextMessage(msg.c_str(), 0);
+            }
+        }
+        
+        return true;
+        
+    } catch (const std::exception& e) {
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string errorMsg = "/say Model loading failed: " + std::string(e.what());
+                game->SendTextMessage(errorMsg.c_str(), 0);
+            }
+        }
+        useMLInference = false;
+        return false;
+    }
+}
+
+// Initialize spatial input manager
+void CChanRTS::InitializeSpatialInputManager() {
+    if (!callback) return;
+    
+    try {
+        spatialInputManager = std::make_unique<SpatialInputManager>(callback);
+        
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                game->SendTextMessage("/say Spatial input manager initialized", 0);
+            }
+        }
+        
+    } catch (const std::exception& e) {
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string errorMsg = "/say Spatial input manager init failed: " + std::string(e.what());
+                game->SendTextMessage(errorMsg.c_str(), 0);
+            }
+        }
+    }
+}
+
+// Convert GameState to spatial tensor for ML input
+SpatialTensor CChanRTS::GameStateToSpatialTensor(const GameState& state) {
+    if (!spatialInputManager) {
+        // Return empty tensor if spatial input manager not available
+        SpatialTensor tensor;
+        tensor.width = 512;
+        tensor.height = 512;
+        tensor.channels = 968;
+        tensor.data.resize(tensor.channels * tensor.width * tensor.height, 0.0f);
+        return tensor;
+    }
+    
+    // Update the spatial input manager with current game state
+    spatialInputManager->UpdateInputTensor(state);
+    
+    // Get the processed tensor for inference
+    return spatialInputManager->GetInputTensorForInference();
+}
+
+// Convert ML model output to MLAction
+MLAction CChanRTS::MLOutputToMLAction(const MLOutput& output, int frame) {
+    MLAction action;
+    action.frame = frame;
+    action.unitActions.clear();
+    
+    // Convert unit selection output to unit actions
+    if (!output.unitSelectionScores.empty()) {
+        // Find top-k selected units and generate actions for them
+        // This is simplified - you'd want more sophisticated action generation
+        
+        for (size_t i = 0; i < output.unitSelectionScores.size() && i < 100; ++i) {
+            if (output.unitSelectionScores[i] > 0.5f) { // Threshold for unit selection
+                UnitAction unitAction;
+                unitAction.unitId = static_cast<int>(i);
+                unitAction.type = UnitAction::MOVE; // Simplified
+                unitAction.priority = static_cast<int>(output.unitSelectionScores[i] * 100);
+                
+                // Use spatial command outputs to determine target locations
+                // This is highly simplified - real implementation would be more complex
+                if (!output.spatialCommands.empty()) {
+                    unitAction.x = output.spatialCommands[0][0] * currentState.mapWidth;
+                    unitAction.y = output.spatialCommands[0][1] * currentState.mapHeight;
+                    unitAction.z = 0;
+                }
+                
+                action.unitActions.push_back(unitAction);
+            }
+        }
+    }
+    
+    // Set strategic state from global parameters
+    if (!output.globalParams.empty()) {
+        action.strategicState = static_cast<int>(output.globalParams[0] * 10); // Scale to 0-10
+        
+        // Copy economic priorities
+        for (int i = 0; i < 10 && i < output.globalParams.size(); ++i) {
+            action.economicPriority[i] = output.globalParams[i];
+        }
+    }
+    
+    return action;
+}
+
+// Training data collection mode control
+void CChanRTS::EnableDataCollection(const std::string& outputDir, bool replayMode) {
+    std::lock_guard<std::mutex> lock(trainingMutex);
+    collectTrainingData = true;
+    dataOutputDir = outputDir;
+    this->replayMode = replayMode;
+    
+    // Clear existing buffer
+    trainingBuffer.clear();
+    
+    if (callback) {
+        const std::unique_ptr<springai::Game> game(callback->GetGame());
+        if (game) {
+            std::string msg = "/say Data collection ENABLED - output: " + outputDir;
+            game->SendTextMessage(msg.c_str(), 0);
+            if (replayMode) {
+                game->SendTextMessage("/say Replay mode: ON (enhanced collection)", 0);
+            }
+        }
+    }
+}
+
+void CChanRTS::DisableDataCollection() {
+    std::lock_guard<std::mutex> lock(trainingMutex);
+    collectTrainingData = false;
+    
+    if (callback) {
+        const std::unique_ptr<springai::Game> game(callback->GetGame());
+        if (game) {
+            game->SendTextMessage("/say Data collection DISABLED", 0);
+        }
+    }
+}
+
+// Save training data in binary format for efficient storage
+void CChanRTS::SaveTrainingDataBinary() {
+    if (trainingBuffer.empty()) {
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                game->SendTextMessage("/say No training data to save (buffer empty)", 0);
+            }
+        }
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(trainingMutex);
+
+    try {
+        // Create filename with timestamp and game info
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        
+        std::string filename;
+        if (!dataOutputDir.empty()) {
+            filename = dataOutputDir + "/chanrts_training_" + std::to_string(time_t) + ".bin";
+        } else {
+            filename = "/tmp/chanrts_training_" + std::to_string(time_t) + ".bin";
+        }
+        
+        std::ofstream file(filename, std::ios::binary);
+        
+        if (!file.is_open()) {
+            throw std::runtime_error("Could not open file for writing: " + filename);
+        }
+        
+        // Write binary format header
+        uint32_t version = 1;
+        uint32_t sampleCount = trainingBuffer.size();
+        file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        file.write(reinterpret_cast<const char*>(&sampleCount), sizeof(sampleCount));
+        
+        // Write each training sample
+        for (const auto& sample : trainingBuffer) {
+            // Sample metadata
+            file.write(reinterpret_cast<const char*>(&sample.sampleFrame), sizeof(sample.sampleFrame));
+            file.write(reinterpret_cast<const char*>(&sample.reward), sizeof(sample.reward));
+            file.write(reinterpret_cast<const char*>(&sample.gameWon), sizeof(sample.gameWon));
+            
+            // Game state data
+            file.write(reinterpret_cast<const char*>(&sample.state.currentFrame), sizeof(sample.state.currentFrame));
+            file.write(reinterpret_cast<const char*>(&sample.state.gameProgress), sizeof(sample.state.gameProgress));
+            file.write(reinterpret_cast<const char*>(&sample.state.mapWidth), sizeof(sample.state.mapWidth));
+            file.write(reinterpret_cast<const char*>(&sample.state.mapHeight), sizeof(sample.state.mapHeight));
+            
+            // Resource data
+            file.write(reinterpret_cast<const char*>(&sample.state.metal), sizeof(sample.state.metal));
+            file.write(reinterpret_cast<const char*>(&sample.state.energy), sizeof(sample.state.energy));
+            file.write(reinterpret_cast<const char*>(&sample.state.metalIncome), sizeof(sample.state.metalIncome));
+            file.write(reinterpret_cast<const char*>(&sample.state.energyIncome), sizeof(sample.state.energyIncome));
+            
+            // Strategic data
+            file.write(reinterpret_cast<const char*>(&sample.state.totalUnitCount), sizeof(sample.state.totalUnitCount));
+            file.write(reinterpret_cast<const char*>(&sample.state.militaryUnitCount), sizeof(sample.state.militaryUnitCount));
+            file.write(reinterpret_cast<const char*>(&sample.state.economicUnitCount), sizeof(sample.state.economicUnitCount));
+            
+            // Unit data
+            uint32_t unitCount = sample.state.allUnits.size();
+            file.write(reinterpret_cast<const char*>(&unitCount), sizeof(unitCount));
+            
+            for (const auto& unit : sample.state.allUnits) {
+                file.write(reinterpret_cast<const char*>(&unit), sizeof(unit));
+            }
+            
+            // Action data
+            file.write(reinterpret_cast<const char*>(&sample.action.strategicState), sizeof(sample.action.strategicState));
+            file.write(reinterpret_cast<const char*>(&sample.action.frame), sizeof(sample.action.frame));
+            file.write(reinterpret_cast<const char*>(&sample.action.economicPriority), sizeof(sample.action.economicPriority));
+            
+            uint32_t actionCount = sample.action.unitActions.size();
+            file.write(reinterpret_cast<const char*>(&actionCount), sizeof(actionCount));
+            
+            for (const auto& unitAction : sample.action.unitActions) {
+                file.write(reinterpret_cast<const char*>(&unitAction), sizeof(unitAction));
+            }
+        }
+        
+        file.close();
+        
+        // Send confirmation
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string msg = "/say Binary training data saved: " + filename + 
+                                " (" + std::to_string(trainingBuffer.size()) + " samples)";
+                game->SendTextMessage(msg.c_str(), 0);
+            }
+        }
+        
+    } catch (const std::exception& e) {
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string errorMsg = "/say Binary save error: " + std::string(e.what());
+                game->SendTextMessage(errorMsg.c_str(), 0);
+            }
+        }
+    }
+}
+
+// Process replay files for training data extraction
+void CChanRTS::ProcessReplay(const std::string& replayPath, const std::string& outputDir) {
+    // This method is intended to be called by external replay processing tools
+    // The actual replay processing is handled by the Spring engine itself
+    // When ChanRTS runs in replay mode, it automatically collects training data
+    
+    if (callback) {
+        const std::unique_ptr<springai::Game> game(callback->GetGame());
+        if (game) {
+            std::string msg = "/say Processing replay: " + replayPath + " -> " + outputDir;
+            game->SendTextMessage(msg.c_str(), 0);
+        }
+    }
+    
+    // Enable data collection for replay processing
+    EnableDataCollection(outputDir, true);
+    
+    // Set collection parameters for replay mode (more frequent collection)
+    std::lock_guard<std::mutex> lock(trainingMutex);
+    // In replay mode, we want more training samples
+    // The actual game loop will handle collection at the specified intervals
+}
+
+// Check environment variables and configuration for data collection settings
+void CChanRTS::CheckDataCollectionConfig() {
+    try {
+        // Check for CHANRTS_CONFIG_PATH environment variable
+        const char* configPath = std::getenv("CHANRTS_CONFIG_PATH");
+        if (configPath) {
+            LoadConfigFromFile(std::string(configPath));
+            return;
+        }
+        
+        // Check individual environment variables
+        const char* enableCollection = std::getenv("CHANRTS_COLLECT_DATA");
+        const char* outputDirEnv = std::getenv("CHANRTS_OUTPUT_DIR");
+        const char* replayModeEnv = std::getenv("CHANRTS_REPLAY_MODE");
+        const char* playerSkillEnv = std::getenv("CHANRTS_PLAYER_SKILL");
+        const char* gameIdEnv = std::getenv("CHANRTS_GAME_ID");
+        
+        if (enableCollection && std::string(enableCollection) == "1") {
+            collectTrainingData = true;
+            
+            if (outputDirEnv) {
+                dataOutputDir = std::string(outputDirEnv);
+            }
+            
+            if (replayModeEnv && std::string(replayModeEnv) == "1") {
+                replayMode = true;
+            }
+            
+            if (playerSkillEnv) {
+                playerSkill = std::stof(std::string(playerSkillEnv));
+            }
+            
+            if (gameIdEnv) {
+                gameId = std::stoi(std::string(gameIdEnv));
+            }
+        }
+        
+    } catch (const std::exception& e) {
+        // Log error but continue
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string errorMsg = "/say Config load error: " + std::string(e.what());
+                game->SendTextMessage(errorMsg.c_str(), 0);
+            }
+        }
+    }
+}
+
+// Load configuration from JSON file
+void CChanRTS::LoadConfigFromFile(const std::string& configPath) {
+    std::ifstream configFile(configPath);
+    if (!configFile.is_open()) {
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string msg = "/say Could not open config file: " + configPath;
+                game->SendTextMessage(msg.c_str(), 0);
+            }
+        }
+        return;
+    }
+    
+    // Read entire file into string
+    std::string configContent((std::istreambuf_iterator<char>(configFile)),
+                              std::istreambuf_iterator<char>());
+    configFile.close();
+    
+    // Simple JSON parsing for data collection configuration
+    // This is a simplified parser - for production you'd want a proper JSON library
+    if (configContent.find("\"enabled\": true") != std::string::npos) {
+        collectTrainingData = true;
+        
+        // Extract output directory
+        size_t outputDirPos = configContent.find("\"output_directory\":");
+        if (outputDirPos != std::string::npos) {
+            size_t startQuote = configContent.find("\"", outputDirPos + 18);
+            size_t endQuote = configContent.find("\"", startQuote + 1);
+            if (startQuote != std::string::npos && endQuote != std::string::npos) {
+                dataOutputDir = configContent.substr(startQuote + 1, endQuote - startQuote - 1);
+            }
+        }
+        
+        // Extract player skill
+        size_t skillPos = configContent.find("\"player_skill_estimate\":");
+        if (skillPos != std::string::npos) {
+            size_t valueStart = configContent.find_first_of("0123456789.", skillPos);
+            if (valueStart != std::string::npos) {
+                size_t valueEnd = configContent.find_first_of(",}", valueStart);
+                if (valueEnd != std::string::npos) {
+                    std::string skillStr = configContent.substr(valueStart, valueEnd - valueStart);
+                    playerSkill = std::stof(skillStr);
+                }
+            }
+        }
+        
+        // Extract replay mode
+        if (configContent.find("\"replay_mode\": true") != std::string::npos) {
+            replayMode = true;
+        }
+        
+        if (callback) {
+            const std::unique_ptr<springai::Game> game(callback->GetGame());
+            if (game) {
+                std::string msg = "/say Loaded config from: " + configPath;
+                game->SendTextMessage(msg.c_str(), 0);
+            }
+        }
+    }
 }
 
 } // namespace chanrts

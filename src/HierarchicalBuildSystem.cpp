@@ -222,7 +222,7 @@ void HierarchicalBuildMapper::InitializeArmadaBuildMap() {
     armBuildMap[JAMMERS] = {
         "armjamt",       // Radar jammer
         "armeyes",       // Dragon's Eyes
-        "armjeth",       • Jethro
+        "armjeth",       // Jethro
         "armveil"        // Veil
     };
     

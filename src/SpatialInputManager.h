@@ -19,7 +19,65 @@ namespace chanrts {
 
 // Forward declarations
 struct GameState;
-struct SpatialTensor;
+
+/**
+ * Spatial tensor for ML model input - 968 channels at map resolution
+ */
+struct SpatialTensor {
+    static const int CHANNELS = 968;
+    
+    int width;
+    int height;
+    int channels;
+    
+    // Primary data structure: layers[channel][spatial_index]
+    std::vector<std::vector<float>> layers;
+    
+    // Alternative flat data structure for compatibility
+    std::vector<float> data;
+    
+    SpatialTensor() : width(0), height(0), channels(CHANNELS) {}
+    
+    SpatialTensor(int w, int h) : width(w), height(h), channels(CHANNELS) {
+        layers.resize(channels);
+        int spatialSize = width * height;
+        for (int i = 0; i < channels; ++i) {
+            layers[i].resize(spatialSize, 0.0f);
+        }
+        data.resize(channels * spatialSize, 0.0f);
+    }
+    
+    // Copy constructor
+    SpatialTensor(const SpatialTensor& other) 
+        : width(other.width), height(other.height), channels(other.channels),
+          layers(other.layers), data(other.data) {}
+    
+    // Assignment operator
+    SpatialTensor& operator=(const SpatialTensor& other) {
+        if (this != &other) {
+            width = other.width;
+            height = other.height;
+            channels = other.channels;
+            layers = other.layers;
+            data = other.data;
+        }
+        return *this;
+    }
+    
+    // Utility methods
+    void Clear() {
+        for (auto& layer : layers) {
+            std::fill(layer.begin(), layer.end(), 0.0f);
+        }
+        std::fill(data.begin(), data.end(), 0.0f);
+    }
+    
+    bool IsValid() const {
+        return width > 0 && height > 0 && 
+               layers.size() == channels &&
+               (!layers.empty() && layers[0].size() == width * height);
+    }
+};
 
 /**
  * Layer indices for the 968-channel spatial input tensor

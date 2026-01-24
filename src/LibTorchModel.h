@@ -1,8 +1,20 @@
 #ifndef _CHANRTS_LIBTORCHMODEL_H
 #define _CHANRTS_LIBTORCHMODEL_H
 
-#include <torch/torch.h>
+#ifndef CHANRTS_NO_LIBTORCH
+// CRITICAL: Include ROCm compatibility fixes before any LibTorch headers
+#include "ROCmCompatibility.h"
+
+#include <ATen/ATen.h>
 #include <torch/script.h>
+#include <torch/nn/modules/linear.h>
+#include <torch/nn/modules/conv.h>
+#include <torch/nn/modules/batchnorm.h>
+#include <torch/nn/modules/container/sequential.h>
+#include <torch/nn/functional.h>
+#include <torch/optim.h>
+#endif
+
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -54,6 +66,7 @@ struct ModelConfig {
     void SaveToFile(const std::string& configPath) const;
 };
 
+#ifndef CHANRTS_NO_LIBTORCH
 /**
  * Flexible backbone networks
  */
@@ -271,6 +284,43 @@ private:
     std::unique_ptr<torch::optim::Optimizer> optimizer;
     std::unique_ptr<torch::optim::LRScheduler> scheduler;
 };
+
+#else // CHANRTS_NO_LIBTORCH
+
+/**
+ * Stub implementations when LibTorch is not available
+ */
+class HierarchicalRTSModel {
+public:
+    HierarchicalRTSModel(const ModelConfig& config) {}
+    ~HierarchicalRTSModel() {}
+    
+    void LoadFromFile(const std::string& modelPath) {
+        throw std::runtime_error("LibTorch not available - cannot load model");
+    }
+    void SetDevice(const std::string& device) {}
+    void SetEvalMode() {}
+    
+    MLOutput Inference(const SpatialTensor& input) {
+        throw std::runtime_error("LibTorch not available - cannot run inference");
+    }
+    
+    ModelConfig GetConfig() const { return ModelConfig(); }
+    size_t GetParameterCount() const { return 0; }
+    size_t GetMemoryUsage() const { return 0; }
+    void PrintModelSummary() const {}
+};
+
+class ModelFactory {
+public:
+    static ModelConfig GetResNet34Config() { return ModelConfig(); }
+    static std::unique_ptr<HierarchicalRTSModel> CreateModel(const ModelConfig& config) {
+        return std::make_unique<HierarchicalRTSModel>(config);
+    }
+    static bool ValidateConfig(const ModelConfig& config) { return false; }
+};
+
+#endif // CHANRTS_NO_LIBTORCH
 
 } // namespace chanrts
 
